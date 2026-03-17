@@ -17,13 +17,14 @@ class Form(StatesGroup):
     phone = State()
     group = State()
     waiting_file = State()
+    contact = State()
     comment = State()
 
 topics = [
     "Uy dizayni maketi",
     "Aqlli tog maketi",
     "Blum taksanomiyasi maketi",
-    "STEAM dars ishlanma"
+    "STEAM yondashuv asosidagi dars ishlanma"
 ]
 
 async def init_db():
@@ -45,10 +46,28 @@ def valid_name(name):
 def valid_phone(phone):
     return re.match(r"^\+998\d{9}$", phone)
 
+def get_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=topics[0])],
+            [KeyboardButton(text=topics[1])],
+            [KeyboardButton(text=topics[2])],
+            [KeyboardButton(text=topics[3])],
+            [KeyboardButton(text="📩 Ustozga yozish")]
+        ],
+        resize_keyboard=True
+    )
+
 @dp.message(F.text == "/start")
 async def start(msg: types.Message, state: FSMContext):
-    await state.set_state(Form.name)
-    await msg.answer("👤 F.I.Sh kiriting:")
+    async with aiosqlite.connect("db.db") as db:
+        user = await db.execute_fetchone("SELECT * FROM users WHERE id=?", (msg.from_user.id,))
+
+    if user:
+        await msg.answer("✅ Siz allaqachon ro‘yxatdan o‘tgansiz!", reply_markup=get_menu())
+    else:
+        await state.set_state(Form.name)
+        await msg.answer("👤 F.I.Sh kiriting:")
 
 @dp.message(Form.name)
 async def get_name(msg: types.Message, state: FSMContext):
@@ -57,12 +76,12 @@ async def get_name(msg: types.Message, state: FSMContext):
         return
     await state.update_data(name=msg.text)
     await state.set_state(Form.phone)
-    await msg.answer("📱 Telefon:")
+    await msg.answer("📱 Telefon (+998...):")
 
 @dp.message(Form.phone)
 async def get_phone(msg: types.Message, state: FSMContext):
     if not valid_phone(msg.text):
-        await msg.answer("❗ +998 bilan yozing")
+        await msg.answer("❗ Noto‘g‘ri format!")
         return
     await state.update_data(phone=msg.text)
     await state.set_state(Form.group)
@@ -72,27 +91,28 @@ async def get_phone(msg: types.Message, state: FSMContext):
 async def get_group(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     async with aiosqlite.connect("db.db") as db:
-        await db.execute("INSERT OR REPLACE INTO users VALUES(?,?,?,?,?)",
+        await db.execute("INSERT INTO users VALUES(?,?,?,?,?)",
                          (msg.from_user.id, data["name"], data["phone"], msg.text, 0))
         await db.commit()
 
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=topics[0])],
-            [KeyboardButton(text=topics[1])],
-            [KeyboardButton(text=topics[2])],
-            [KeyboardButton(text=topics[3])]
-        ],
-        resize_keyboard=True
-    )
-
     await state.clear()
-    await msg.answer("📚 Mavzuni tanlang:", reply_markup=kb)
+    await msg.answer("📚 Mavzuni tanlang:", reply_markup=get_menu())
+
+@dp.message(F.text == "📩 Ustozga yozish")
+async def contact(msg: types.Message, state: FSMContext):
+    await state.set_state(Form.contact)
+    await msg.answer("✍️ Xabar yozing:")
+
+@dp.message(Form.contact)
+async def send_to_admin(msg: types.Message, state: FSMContext):
+    await bot.send_message(ADMIN_ID, f"📩 Talabadan xabar:\n{msg.text}")
+    await msg.answer("✅ Yuborildi!")
+    await state.clear()
 
 @dp.message(F.text.in_(topics))
 async def choose_topic(msg: types.Message, state: FSMContext):
     await state.set_state(Form.waiting_file)
-    await msg.answer("📎 Endi dalil yuboring (rasm/pdf/link):")
+    await msg.answer("📎 Dalil yuboring (rasm/pdf/link):")
 
 @dp.message(Form.waiting_file, F.photo | F.document | F.text)
 async def file_handler(msg: types.Message, state: FSMContext):
@@ -128,14 +148,35 @@ async def score(call: types.CallbackQuery, state: FSMContext):
 async def comment(msg: types.Message, state: FSMContext):
     if msg.from_user.id in temp:
         user_id, score = temp[msg.from_user.id]
-        await bot.send_message(int(user_id),
-            f"🎉 {score} ball qo‘yildi!\n📝 {msg.text}")
+        await bot.send_message(int(user_id), f"🎉 {score} ball qo‘yildi!\n📝 {msg.text}")
         await msg.answer("✅ Yuborildi")
         del temp[msg.from_user.id]
         await state.clear()
 
+@dp.message(F.text == "/stat")
+async def stat(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect("db.db") as db:
+        total = (await db.execute_fetchone("SELECT COUNT(*) FROM users"))[0]
+        submitted = (await db.execute_fetchone("SELECT COUNT(*) FROM users WHERE submitted=1"))[0]
+        not_sub = total - submitted
+    await msg.answer(f"📊\n👥 {total}\n✅ {submitted}\n❌ {not_sub}")
+
+async def reminder():
+    while True:
+        await asyncio.sleep(86400)
+        async with aiosqlite.connect("db.db") as db:
+            users = await db.execute_fetchall("SELECT id FROM users WHERE submitted=0")
+            for u in users:
+                try:
+                    await bot.send_message(u[0], "⏰ Vazifani bajaring!")
+                except:
+                    pass
+
 async def main():
     await init_db()
+    asyncio.create_task(reminder())
     await dp.start_polling(bot)
 
 asyncio.run(main())
