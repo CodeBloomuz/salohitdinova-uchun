@@ -1,2 +1,2 @@
-pip install aiogram aiosqlite
-python bot.py
+aiogram
+aiosqlite
