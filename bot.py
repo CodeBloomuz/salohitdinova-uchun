@@ -1,182 +1,197 @@
+import logging
+import sqlite3
 import asyncio
-import re
-import aiosqlite
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.context import FSMContext
+from aiogram import Bot, Dispatcher, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 
-TOKEN = "8731746159:AAFB9EDKmxgQaKUaRP9yiDj7jJKjzuYPusQ"
-ADMIN_ID = 7378071060
+API_TOKEN = "8731746159:AAFB9EDKmxgQaKUaRP9yiDj7jJKjzuYPusQ"  # O'z tokeningizni qo'ying
+ADMIN_IDS = [7378071060]  # Ustozlar Telegram ID sini qo'ying
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-class Form(StatesGroup):
-    name = State()
+# ================== DATABASE ==================
+conn = sqlite3.connect("students.db")
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS students(
+    id INTEGER PRIMARY KEY,
+    full_name TEXT,
+    phone TEXT,
+    group_name TEXT,
+    topic TEXT,
+    submitted_file TEXT,
+    submitted_type TEXT,
+    score INTEGER,
+    comment TEXT
+)
+''')
+conn.commit()
+
+# ================== FSM ==================
+class Registration(StatesGroup):
+    full_name = State()
     phone = State()
     group = State()
-    waiting_file = State()
-    contact = State()
-    comment = State()
+    topic = State()
+    submission = State()
 
-topics = [
-    "Uy dizayni maketi",
-    "Aqlli tog maketi",
-    "Blum taksanomiyasi maketi",
-    "STEAM yondashuv asosidagi dars ishlanma"
-]
+# ================== Keyboards ==================
+def main_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("📂 Vazifalar"), KeyboardButton("📩 Ustozga xabar"))
+    return kb
 
-async def init_db():
-    async with aiosqlite.connect("db.db") as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            phone TEXT,
-            group_name TEXT,
-            submitted INTEGER DEFAULT 0
-        )
-        """)
-        await db.commit()
+def topic_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("Uy dizayni maketi", "Aqlli tog maketi")
+    kb.add("Blum taksanomiyasi maketi", "STEAM yondashuv asosidagi dars ishlanma")
+    kb.add(KeyboardButton("🔙 Orqaga"))
+    return kb
 
-def valid_name(name):
-    return len(name.split()) >= 3
+def score_keyboard(student_id):
+    kb = InlineKeyboardMarkup()
+    for s in range(2,5):
+        kb.add(InlineKeyboardButton(text=f"{s} ball", callback_data=f"{student_id}_{s}"))
+    kb.add(InlineKeyboardButton(text="Izoh qoldirish", callback_data=f"comment_{student_id}"))
+    return kb
 
-def valid_phone(phone):
-    return re.match(r"^\+998\d{9}$", phone)
-
-def get_menu():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=topics[0])],
-            [KeyboardButton(text=topics[1])],
-            [KeyboardButton(text=topics[2])],
-            [KeyboardButton(text=topics[3])],
-            [KeyboardButton(text="📩 Ustozga yozish")]
-        ],
-        resize_keyboard=True
-    )
-
-@dp.message(F.text == "/start")
-async def start(msg: types.Message, state: FSMContext):
-    async with aiosqlite.connect("db.db") as db:
-        user = await db.execute_fetchone("SELECT * FROM users WHERE id=?", (msg.from_user.id,))
-
-    if user:
-        await msg.answer("✅ Siz allaqachon ro‘yxatdan o‘tgansiz!", reply_markup=get_menu())
+# ================== Handlers ==================
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message, state: FSMContext):
+    cursor.execute("SELECT * FROM students WHERE id=?", (message.from_user.id,))
+    student = cursor.fetchone()
+    if student:
+        await message.answer("Botga xush kelibsiz!", reply_markup=main_menu())
+        await Registration.submission.set()
     else:
-        await state.set_state(Form.name)
-        await msg.answer("👤 F.I.Sh kiriting:")
+        await message.answer("Ro'yxatdan o'ting. To'liq ism, familiya va sharifingizni kiriting:")
+        await Registration.full_name.set()
 
-@dp.message(Form.name)
-async def get_name(msg: types.Message, state: FSMContext):
-    if not valid_name(msg.text):
-        await msg.answer("❗ To‘liq yozing!")
+# ---- Registration ----
+@dp.message_handler(state=Registration.full_name)
+async def reg_fullname(message: types.Message, state: FSMContext):
+    if len(message.text.split()) < 3:
+        await message.answer("Iltimos, to'liq ism, familiya va sharifni yozing!")
         return
-    await state.update_data(name=msg.text)
-    await state.set_state(Form.phone)
-    await msg.answer("📱 Telefon (+998...):")
+    await state.update_data(full_name=message.text)
+    await message.answer("Telefon raqamingizni kiriting (+998...)")
+    await Registration.phone.set()
 
-@dp.message(Form.phone)
-async def get_phone(msg: types.Message, state: FSMContext):
-    if not valid_phone(msg.text):
-        await msg.answer("❗ Noto‘g‘ri format!")
+@dp.message_handler(state=Registration.phone)
+async def reg_phone(message: types.Message, state: FSMContext):
+    if not message.text.startswith("+998"):
+        await message.answer("Telefon raqamingiz +998 bilan boshlanishi kerak!")
         return
-    await state.update_data(phone=msg.text)
-    await state.set_state(Form.group)
-    await msg.answer("🎓 Guruh:")
+    await state.update_data(phone=message.text)
+    await message.answer("Hozirgi o'qiyotgan guruhingizni kiriting:")
+    await Registration.group.set()
 
-@dp.message(Form.group)
-async def get_group(msg: types.Message, state: FSMContext):
+@dp.message_handler(state=Registration.group)
+async def reg_group(message: types.Message, state: FSMContext):
+    await state.update_data(group=message.text)
+    await message.answer("Mavzuni tanlang:", reply_markup=topic_menu())
+    await Registration.topic.set()
+
+@dp.message_handler(lambda message: message.text in ["Uy dizayni maketi","Aqlli tog maketi",
+                                                    "Blum taksanomiyasi maketi","STEAM yondashuv asosidagi dars ishlanma",
+                                                    "🔙 Orqaga"], state=Registration.topic)
+async def reg_topic(message: types.Message, state: FSMContext):
+    if message.text == "🔙 Orqaga":
+        await message.answer("Guruhni qayta kiriting:")
+        await Registration.group.set()
+        return
+    await state.update_data(topic=message.text)
     data = await state.get_data()
-    async with aiosqlite.connect("db.db") as db:
-        await db.execute("INSERT INTO users VALUES(?,?,?,?,?)",
-                         (msg.from_user.id, data["name"], data["phone"], msg.text, 0))
-        await db.commit()
+    cursor.execute("INSERT INTO students(id, full_name, phone, group_name, topic) VALUES (?, ?, ?, ?, ?)",
+                   (message.from_user.id, data['full_name'], data['phone'], data['group'], data['topic']))
+    conn.commit()
+    await message.answer("Ro'yxatdan muvaffaqiyatli o'tdingiz! 📎 Endi dalilni yuboring: 🖼 / 📄 / 🔗", reply_markup=main_menu())
+    await Registration.submission.set()
 
-    await state.clear()
-    await msg.answer("📚 Mavzuni tanlang:", reply_markup=get_menu())
+# ---- Show tasks ----
+@dp.message_handler(lambda message: message.text == "📂 Vazifalar", state=Registration.submission)
+async def show_task(message: types.Message):
+    cursor.execute("SELECT topic FROM students WHERE id=?", (message.from_user.id,))
+    topic = cursor.fetchone()[0]
+    await message.answer(f"Siz tanlagan mavzu: {topic}\nEndi fayl yuboring: 🖼 / 📄 / 🔗")
 
-@dp.message(F.text == "📩 Ustozga yozish")
-async def contact(msg: types.Message, state: FSMContext):
-    await state.set_state(Form.contact)
-    await msg.answer("✍️ Xabar yozing:")
+# ---- Submission ----
+@dp.message_handler(lambda message: message.content_type in ['photo','document','text'], state=Registration.submission)
+async def receive_submission(message: types.Message):
+    if message.content_type == 'photo':
+        file_id = message.photo[-1].file_id
+    elif message.content_type == 'document':
+        file_id = message.document.file_id
+    else:
+        file_id = message.text
+    cursor.execute("UPDATE students SET submitted_file=?, submitted_type=? WHERE id=?",
+                   (file_id, message.content_type, message.from_user.id))
+    conn.commit()
+    await message.answer("Faylingiz qabul qilindi. Ustoz ko'rib chiqadi!")
 
-@dp.message(Form.contact)
-async def send_to_admin(msg: types.Message, state: FSMContext):
-    await bot.send_message(ADMIN_ID, f"📩 Talabadan xabar:\n{msg.text}")
-    await msg.answer("✅ Yuborildi!")
-    await state.clear()
+# ---- Talaba ustozga habar ----
+@dp.message_handler(lambda message: message.text == "📩 Ustozga xabar")
+async def student_message(message: types.Message):
+    cursor.execute("SELECT full_name FROM students WHERE id=?", (message.from_user.id,))
+    full_name = cursor.fetchone()[0]
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(admin_id, f"Talaba {full_name} yozdi:\n{message.text}")
+    await message.answer("Xabaringiz ustozga yuborildi!")
 
-@dp.message(F.text.in_(topics))
-async def choose_topic(msg: types.Message, state: FSMContext):
-    await state.set_state(Form.waiting_file)
-    await msg.answer("📎 Dalil yuboring (rasm/pdf/link):")
-
-@dp.message(Form.waiting_file, F.photo | F.document | F.text)
-async def file_handler(msg: types.Message, state: FSMContext):
-    user_id = msg.from_user.id
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐2", callback_data=f"2|{user_id}")],
-        [InlineKeyboardButton(text="⭐3", callback_data=f"3|{user_id}")],
-        [InlineKeyboardButton(text="⭐4", callback_data=f"4|{user_id}")]
-    ])
-
-    await msg.forward(ADMIN_ID)
-    await bot.send_message(ADMIN_ID, "👆 Baholang:", reply_markup=kb)
-
-    async with aiosqlite.connect("db.db") as db:
-        await db.execute("UPDATE users SET submitted=1 WHERE id=?", (user_id,))
-        await db.commit()
-
-    await msg.answer("✅ Yuborildi!")
-    await state.clear()
-
-temp = {}
-
-@dp.callback_query()
-async def score(call: types.CallbackQuery, state: FSMContext):
-    score, user_id = call.data.split("|")
-    temp[call.from_user.id] = (user_id, score)
-    await state.set_state(Form.comment)
-    await call.message.answer("✍️ Izoh yozing:")
-    await call.answer()
-
-@dp.message(Form.comment)
-async def comment(msg: types.Message, state: FSMContext):
-    if msg.from_user.id in temp:
-        user_id, score = temp[msg.from_user.id]
-        await bot.send_message(int(user_id), f"🎉 {score} ball qo‘yildi!\n📝 {msg.text}")
-        await msg.answer("✅ Yuborildi")
-        del temp[msg.from_user.id]
-        await state.clear()
-
-@dp.message(F.text == "/stat")
-async def stat(msg: types.Message):
-    if msg.from_user.id != ADMIN_ID:
+# ---- Admin paneli ----
+@dp.message_handler(commands=['admin'])
+async def admin_panel(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Siz admin emassiz!")
         return
-    async with aiosqlite.connect("db.db") as db:
-        total = (await db.execute_fetchone("SELECT COUNT(*) FROM users"))[0]
-        submitted = (await db.execute_fetchone("SELECT COUNT(*) FROM users WHERE submitted=1"))[0]
-        not_sub = total - submitted
-    await msg.answer(f"📊\n👥 {total}\n✅ {submitted}\n❌ {not_sub}")
+    cursor.execute("SELECT COUNT(*) FROM students")
+    total = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM students WHERE submitted_file IS NOT NULL")
+    submitted = cursor.fetchone()[0]
+    not_submitted = total - submitted
+    await message.answer(f"📊 Statistika:\nUmumiy: {total}\nTopshirganlar: {submitted}\nTopshirmaganlar: {not_submitted}")
+    cursor.execute("SELECT id, full_name FROM students WHERE submitted_file IS NOT NULL")
+    for s in cursor.fetchall():
+        await message.answer(f"Talaba: {s[1]}", reply_markup=score_keyboard(s[0]))
 
-async def reminder():
+# ---- Ball qo'yish va izoh ----
+@dp.callback_query_handler(lambda c: "_" in c.data or "comment_" in c.data)
+async def handle_score(callback: types.CallbackQuery):
+    data = callback.data
+    student_id = None
+    if data.startswith("comment_"):
+        student_id = int(data.split("_")[1])
+        await bot.send_message(callback.from_user.id, "Talaba uchun izoh yozing:")
+        @dp.message_handler()
+        async def add_comment(msg: types.Message):
+            cursor.execute("UPDATE students SET comment=? WHERE id=?", (msg.text, student_id))
+            conn.commit()
+            await msg.answer("Izoh qo‘yildi!")
+            await bot.send_message(student_id, f"Ustoz sizning topshirig'ingizga izoh qoldirdi:\n{msg.text}")
+    else:
+        student_id, score = data.split("_")
+        cursor.execute("UPDATE students SET score=? WHERE id=?", (int(score), int(student_id)))
+        conn.commit()
+        await bot.answer_callback_query(callback.id, text=f"{score} ball qo'yildi")
+        await bot.send_message(student_id, f"Sizning topshirig'ingizga {score} ball qo'yildi!")
+
+# ---- 24 soatda ogohlantirish ----
+async def daily_reminder():
     while True:
-        await asyncio.sleep(86400)
-        async with aiosqlite.connect("db.db") as db:
-            users = await db.execute_fetchall("SELECT id FROM users WHERE submitted=0")
-            for u in users:
-                try:
-                    await bot.send_message(u[0], "⏰ Vazifani bajaring!")
-                except:
-                    pass
+        cursor.execute("SELECT id FROM students WHERE submitted_file IS NULL")
+        for s in cursor.fetchall():
+            await bot.send_message(s[0], "Iltimos, topshiriqni bajarishingizni unutmang!")
+        await asyncio.sleep(86400)  # 24 soat
 
-async def main():
-    await init_db()
-    asyncio.create_task(reminder())
-    await dp.start_polling(bot)
-
-asyncio.run(main())
+# ================== Start ==================
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.create_task(daily_reminder())
+    executor.start_polling(dp, skip_updates=True)
