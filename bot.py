@@ -6,8 +6,8 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-TOKEN = "TOKENING"
-ADMIN_ID = 123456789
+TOKEN = "8731746159:AAFB9EDKmxgQaKUaRP9yiDj7jJKjzuYPusQ"
+ADMIN_ID = 7378071060
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
