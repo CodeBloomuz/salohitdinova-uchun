@@ -13,8 +13,8 @@ from telegram.ext import (
 )
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-BOT_TOKEN  = "YOUR_BOT_TOKEN_HERE"          # @BotFather dan olingan token
-ADMIN_IDS  = [123456789]                    # Ustoz(lar)ning Telegram ID si
+BOT_TOKEN  = "8731746159:AAFB9EDKmxgQaKUaRP9yiDj7jJKjzuYPusQ"          # @BotFather dan olingan token
+ADMIN_IDS  = [7378071060]                    # Ustoz(lar)ning Telegram ID si
 
 # ─── CONVERSATION STATES ─────────────────────────────────────────────────────
 NAME, PHONE, GROUP, TOPIC, PROOF = range(5)
